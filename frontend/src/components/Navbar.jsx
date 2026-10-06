@@ -12,8 +12,9 @@ export default function Navbar() {
         <div className="nav-links">
           <a href="#features">Shields</a>
           <a href="#scanner">Scan</a>
+          <a href="#usecases">Use cases</a>
+          <a href="#integrate">API</a>
           <a href="#library">Library</a>
-          <a href="#integrations">Integrations</a>
         </div>
         <div className="nav-cta">
           <a className="btn btn-dark" href="#scanner">Try Aegis</a>

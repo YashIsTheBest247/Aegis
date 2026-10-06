@@ -1,12 +1,18 @@
-import React, { useState } from 'react'
+import React, { useState, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { MessageSquare, Link2, Phone, Bot, Sparkles, Shield, AlertCircle, CheckCircle2, ArrowRight } from 'lucide-react'
+import {
+  MessageSquare, Link2, Phone, Bot, Image as ImageIcon, Mic,
+  Sparkles, Shield, AlertCircle, CheckCircle2, ArrowRight, Upload,
+  Play, Square, Trash2,
+} from 'lucide-react'
 
 const TABS = [
-  { id: 'message', label: 'Message / Email', icon: MessageSquare, placeholder: 'Paste a suspicious SMS, email, DM, or chat message here…', endpoint: '/api/analyze/message', field: 'message' },
-  { id: 'url', label: 'URL / Link', icon: Link2, placeholder: 'https://example.com', endpoint: '/api/analyze/url', field: 'url' },
-  { id: 'call', label: 'Call Transcript', icon: Phone, placeholder: 'Paste a transcript of a suspicious call or voicemail…', endpoint: '/api/analyze/call', field: 'transcript' },
-  { id: 'ai', label: 'AI-Text Detector', icon: Bot, placeholder: 'Paste any text to detect if it was AI-generated…', endpoint: '/api/analyze/deepfake-text', field: 'text' },
+  { id: 'message', label: 'Message / Email', icon: MessageSquare, placeholder: 'Paste a suspicious SMS, email, DM, or chat message here…', endpoint: '/api/analyze/message', field: 'message', kind: 'text' },
+  { id: 'url', label: 'URL / Link', icon: Link2, placeholder: 'https://example.com', endpoint: '/api/analyze/url', field: 'url', kind: 'text' },
+  { id: 'call', label: 'Call Transcript', icon: Phone, placeholder: 'Paste a transcript of a suspicious call or voicemail…', endpoint: '/api/analyze/call', field: 'transcript', kind: 'text' },
+  { id: 'ai', label: 'AI-Text Detector', icon: Bot, placeholder: 'Paste any text to detect if it was AI-generated…', endpoint: '/api/analyze/deepfake-text', field: 'text', kind: 'text' },
+  { id: 'image', label: 'Screenshot', icon: ImageIcon, placeholder: 'Upload a screenshot of a suspicious message, website, or notification.', endpoint: '/api/analyze/image', kind: 'image' },
+  { id: 'voice', label: 'Voice Recording', icon: Mic, placeholder: 'Record a suspicious voice message or paste call audio.', endpoint: '/api/analyze/audio', kind: 'audio' },
 ]
 
 const SAMPLES = {
@@ -45,32 +51,102 @@ function ScoreRing({ score, verdict }) {
 export default function Scanner() {
   const [tab, setTab] = useState('message')
   const [input, setInput] = useState('')
+  const [file, setFile] = useState(null)
+  const [filePreview, setFilePreview] = useState(null)
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState(null)
   const [error, setError] = useState(null)
+  const [recording, setRecording] = useState(false)
+  const [audioUrl, setAudioUrl] = useState(null)
+  const [audioBlob, setAudioBlob] = useState(null)
+  const mediaRecorderRef = useRef(null)
+  const chunksRef = useRef([])
+  const fileInputRef = useRef(null)
 
   const activeTab = TABS.find((t) => t.id === tab)
 
-  const run = async () => {
-    if (!input.trim()) return
-    setLoading(true)
-    setError(null)
-    setResult(null)
+  const resetState = () => {
+    setResult(null); setInput(''); setFile(null); setFilePreview(null)
+    setAudioUrl(null); setAudioBlob(null); setError(null)
+  }
+
+  const onPickFile = (e) => {
+    const f = e.target.files?.[0]
+    if (!f) return
+    setFile(f)
+    const url = URL.createObjectURL(f)
+    setFilePreview(url)
+  }
+
+  const onDrop = (e) => {
+    e.preventDefault()
+    const f = e.dataTransfer.files?.[0]
+    if (!f) return
+    setFile(f)
+    setFilePreview(URL.createObjectURL(f))
+  }
+
+  const startRecord = async () => {
     try {
-      const res = await fetch(activeTab.endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ [activeTab.field]: input }),
-      })
-      if (!res.ok) throw new Error('Server error')
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const mr = new MediaRecorder(stream)
+      chunksRef.current = []
+      mr.ondataavailable = (e) => chunksRef.current.push(e.data)
+      mr.onstop = () => {
+        const blob = new Blob(chunksRef.current, { type: 'audio/webm' })
+        setAudioBlob(blob)
+        setAudioUrl(URL.createObjectURL(blob))
+        stream.getTracks().forEach((t) => t.stop())
+      }
+      mediaRecorderRef.current = mr
+      mr.start()
+      setRecording(true)
+    } catch (e) {
+      setError('Microphone access denied. Allow mic permission and try again.')
+    }
+  }
+
+  const stopRecord = () => {
+    mediaRecorderRef.current?.stop()
+    setRecording(false)
+  }
+
+  const run = async () => {
+    setLoading(true); setError(null); setResult(null)
+    try {
+      let res
+      if (activeTab.kind === 'image') {
+        if (!file) throw new Error('Pick a screenshot first.')
+        const fd = new FormData()
+        fd.append('file', file)
+        res = await fetch(activeTab.endpoint, { method: 'POST', body: fd })
+      } else if (activeTab.kind === 'audio') {
+        if (!audioBlob) throw new Error('Record audio first.')
+        const fd = new FormData()
+        fd.append('file', audioBlob, 'recording.webm')
+        res = await fetch(activeTab.endpoint, { method: 'POST', body: fd })
+      } else {
+        if (!input.trim()) throw new Error('Enter something to scan.')
+        res = await fetch(activeTab.endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ [activeTab.field]: input }),
+        })
+      }
+      if (!res.ok) throw new Error(`Server returned ${res.status}`)
       const data = await res.json()
       setResult(data)
     } catch (e) {
-      setError('Could not reach Aegis backend. Is the FastAPI server running on port 8010?')
+      setError(e.message || 'Could not reach Aegis backend. Is the FastAPI server running on port 8010?')
     } finally {
       setLoading(false)
     }
   }
+
+  const canRun = loading ? false
+    : activeTab.kind === 'image' ? !!file
+    : activeTab.kind === 'audio' ? !!audioBlob
+    : !!input.trim()
 
   return (
     <div className="tool-wrap">
@@ -81,7 +157,7 @@ export default function Scanner() {
             <button
               key={t.id}
               className={`tool-tab ${tab === t.id ? 'active' : ''}`}
-              onClick={() => { setTab(t.id); setResult(null); setInput('') }}
+              onClick={() => { setTab(t.id); resetState() }}
             >
               <I size={16} />
               {t.label}
@@ -96,7 +172,8 @@ export default function Scanner() {
             <Sparkles size={16} color="#FF5A1F" />
             Input
           </div>
-          {tab === 'url' ? (
+
+          {activeTab.kind === 'text' && (tab === 'url' ? (
             <input
               className="tool-input"
               placeholder={activeTab.placeholder}
@@ -110,21 +187,100 @@ export default function Scanner() {
               value={input}
               onChange={(e) => setInput(e.target.value)}
             />
+          ))}
+
+          {activeTab.kind === 'image' && (
+            <div
+              className="drop-zone"
+              onClick={() => fileInputRef.current?.click()}
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={onDrop}
+            >
+              <input
+                type="file"
+                accept="image/*"
+                ref={fileInputRef}
+                onChange={onPickFile}
+                style={{ display: 'none' }}
+              />
+              {!filePreview ? (
+                <>
+                  <div className="dz-ring"><Upload size={28} /></div>
+                  <div style={{ fontWeight: 600, color: '#333' }}>Click to upload or drag a screenshot here</div>
+                  <div style={{ fontSize: '0.85rem', color: '#999', marginTop: 4 }}>
+                    Gemini will OCR the text + flag visual scam signals
+                  </div>
+                </>
+              ) : (
+                <>
+                  <img src={filePreview} alt="screenshot preview" className="dz-preview" />
+                  <div style={{ display: 'flex', gap: 10, marginTop: 10 }}>
+                    <button className="btn btn-ghost" onClick={(e) => { e.stopPropagation(); setFile(null); setFilePreview(null) }}>
+                      <Trash2 size={14} /> Remove
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
           )}
-          <div className="tool-label" style={{ fontSize: '0.82rem', color: '#888', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Try a sample</div>
-          <div className="sample-chips">
-            {SAMPLES[tab].map((s, i) => (
-              <span key={i} className="chip" onClick={() => setInput(s)}>
-                Sample {i + 1}
-              </span>
-            ))}
-          </div>
+
+          {activeTab.kind === 'audio' && (
+            <div className="drop-zone">
+              {!audioUrl ? (
+                <>
+                  <div className={`dz-ring ${recording ? 'rec' : ''}`}>
+                    <Mic size={28} />
+                  </div>
+                  <div style={{ fontWeight: 600, color: '#333' }}>
+                    {recording ? 'Recording… tap stop when done' : 'Click record and paste the suspicious voicemail'}
+                  </div>
+                  <div style={{ fontSize: '0.85rem', color: '#999', marginTop: 4 }}>
+                    Gemini transcribes + scores deepfake voice likelihood
+                  </div>
+                  <div style={{ marginTop: 16 }}>
+                    {!recording ? (
+                      <button className="btn btn-primary" onClick={startRecord}>
+                        <Play size={16} /> Start Recording
+                      </button>
+                    ) : (
+                      <button className="btn btn-dark" onClick={stopRecord}>
+                        <Square size={14} /> Stop
+                      </button>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <>
+                  <audio controls src={audioUrl} style={{ width: '100%' }} />
+                  <div style={{ display: 'flex', gap: 10, marginTop: 10 }}>
+                    <button className="btn btn-ghost" onClick={() => { setAudioUrl(null); setAudioBlob(null) }}>
+                      <Trash2 size={14} /> Discard
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+
+          {activeTab.kind === 'text' && SAMPLES[tab] && (
+            <>
+              <div className="tool-label" style={{ fontSize: '0.82rem', color: '#888', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Try a sample</div>
+              <div className="sample-chips">
+                {SAMPLES[tab].map((s, i) => (
+                  <span key={i} className="chip" onClick={() => setInput(s)}>
+                    Sample {i + 1}
+                  </span>
+                ))}
+              </div>
+            </>
+          )}
+
           <motion.button
             className="btn btn-primary btn-lg"
             onClick={run}
-            disabled={loading || !input.trim()}
-            whileHover={{ scale: 1.02 }}
-            whileTap={{ scale: 0.94 }}
+            disabled={!canRun}
+            whileHover={{ scale: canRun ? 1.02 : 1 }}
+            whileTap={{ scale: canRun ? 0.94 : 1 }}
             transition={{ type: 'spring', stiffness: 500, damping: 20 }}
           >
             {loading ? 'Analyzing…' : <>Analyze with Gemini <ArrowRight size={18} /></>}
@@ -137,7 +293,7 @@ export default function Scanner() {
               <motion.div key="empty" className="result-empty" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
                 <div className="ring"><Shield size={30} /></div>
                 <div style={{ fontWeight: 600, color: '#333' }}>Your verdict will appear here</div>
-                <div style={{ fontSize: '0.88rem', marginTop: 6 }}>Pick a sample or paste your own content, then run Aegis.</div>
+                <div style={{ fontSize: '0.88rem', marginTop: 6 }}>Pick a sample, upload a screenshot, or record audio.</div>
               </motion.div>
             )}
 
@@ -156,7 +312,7 @@ export default function Scanner() {
             {error && (
               <motion.div key="err" className="result-empty" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
                 <div className="ring" style={{ background: '#FEE2E2', color: '#DC2626' }}><AlertCircle size={30} /></div>
-                <div style={{ fontWeight: 600, color: '#B91C1C' }}>Backend unreachable</div>
+                <div style={{ fontWeight: 600, color: '#B91C1C' }}>Something went wrong</div>
                 <div style={{ fontSize: '0.88rem', marginTop: 6 }}>{error}</div>
               </motion.div>
             )}
@@ -181,7 +337,6 @@ function ResultView({ result, tab }) {
   const flags = result.red_flags || result.indicators || []
   const actions = result.recommended_actions || (result.recommendation ? [result.recommendation] : [])
   const explanation = result.explanation || ''
-  const scoreLabel = tab === 'ai' ? 'AI likelihood' : 'Threat score'
 
   return (
     <>
@@ -207,9 +362,37 @@ function ResultView({ result, tab }) {
         <ScoreRing score={score} verdict={verdict} />
       </div>
 
+      {result.extracted_text && (
+        <>
+          <div className="result-section-title">Text read from image</div>
+          <div className="explanation" style={{ fontStyle: 'italic', fontSize: '0.88rem' }}>
+            "{result.extracted_text}"
+          </div>
+        </>
+      )}
+
+      {result.transcript && (
+        <>
+          <div className="result-section-title">Transcript</div>
+          <div className="explanation" style={{ fontStyle: 'italic', fontSize: '0.88rem' }}>
+            "{result.transcript}"
+          </div>
+        </>
+      )}
+
       {explanation && (
         <div className="explanation">
           {explanation}
+        </div>
+      )}
+
+      {result.deepfake_voice_likelihood !== undefined && (
+        <div className="deepfake-meter">
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
+            <span style={{ fontWeight: 700, color: '#111', fontSize: '0.85rem' }}>Deepfake voice likelihood</span>
+            <span style={{ fontWeight: 700, color: '#FF5A1F' }}>{result.deepfake_voice_likelihood}%</span>
+          </div>
+          <div className="bar"><div className="bar-fill" style={{ width: `${result.deepfake_voice_likelihood}%` }} /></div>
         </div>
       )}
 

@@ -1,5 +1,5 @@
 import React from 'react'
-import { MessageSquare, Link2, Phone, Bot, BookOpen, ShieldCheck } from 'lucide-react'
+import { MessageSquare, Link2, Phone, Bot, Image as ImageIcon, Mic } from 'lucide-react'
 
 const FEATURES = [
   {
@@ -13,28 +13,35 @@ const FEATURES = [
     icon: Link2,
     bg: '#EDE4FF', color: '#8B5CF6',
     title: 'URL / Phishing Check',
-    body: 'Detects typosquatting, look-alike domains, and shady TLDs. Suggests the real safe URL when a brand is being impersonated.',
+    body: 'Detects typosquatting, look-alike domains, shady TLDs. Suggests the real safe URL when a brand is impersonated.',
     span: false,
   },
   {
     icon: Phone,
     bg: '#D6F0FA', color: '#0284C7',
-    title: 'Voice Call Analyzer',
+    title: 'Voice Call Transcripts',
     body: 'Paste a call transcript — Aegis flags grandparent, IRS, tech-support, and voice-clone scams with a deepfake likelihood score.',
     span: false,
   },
   {
-    icon: Bot,
-    bg: '#FFF4D1', color: '#B45309',
-    title: 'AI-Generated Text Detector',
-    body: 'Spots mass phishing, fake reviews, and impersonation content written by ChatGPT, Claude, or Gemini — before it fools you.',
+    icon: ImageIcon,
+    bg: '#FEE2E2', color: '#DC2626',
+    title: 'Screenshot Scanner',
+    body: 'Upload a screenshot of a suspicious message, email, or notification. Gemini Vision reads the text, flags visual scam signals, and scores threat.',
     span: true,
   },
   {
-    icon: BookOpen,
+    icon: Mic,
+    bg: '#FFF4D1', color: '#B45309',
+    title: 'Voice Recording Analyzer',
+    body: 'Record audio in your browser — Aegis transcribes it with Gemini and estimates deepfake-voice likelihood from cadence and quality cues.',
+    span: false,
+  },
+  {
+    icon: Bot,
     bg: '#DCFCE7', color: '#15803D',
-    title: 'Scam Playbook Library',
-    body: 'Learn the 8 most common scams, red flags, and what to do if targeted. Share with family in one tap.',
+    title: 'AI-Generated Text Detector',
+    body: 'Spots mass phishing, fake reviews, and impersonation content written by ChatGPT, Claude, or Gemini — before it fools you.',
     span: false,
   },
 ]

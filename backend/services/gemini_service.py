@@ -1,6 +1,9 @@
 import os
 import json
 import re
+import base64
+import time
+from collections import deque
 from typing import Optional
 
 from google import genai
@@ -10,6 +13,9 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash-exp")
 
 _client: Optional[genai.Client] = None
+
+# in-memory ring buffer of recent anonymized scans (for the live threat feed)
+RECENT_SCANS: deque = deque(maxlen=40)
 
 
 def _get_client() -> Optional[genai.Client]:
@@ -29,8 +35,18 @@ _gen_config = types.GenerateContentConfig(
     response_mime_type="application/json",
 )
 
+# For multimodal (image/audio) we skip response_mime_type since vision prompts return mixed content
+_gen_config_vision = types.GenerateContentConfig(
+    temperature=0.3,
+    top_p=0.95,
+    top_k=40,
+    max_output_tokens=2048,
+)
+
 
 def _extract_json(text: str) -> dict:
+    if not text:
+        return {}
     try:
         return json.loads(text)
     except Exception:
@@ -42,6 +58,19 @@ def _extract_json(text: str) -> dict:
         except Exception:
             pass
     return {}
+
+
+def _log_scan(kind: str, verdict: str, score: int, snippet: str = ""):
+    # Anonymize: keep first 50 chars only, strip URLs/emails
+    clean = re.sub(r"https?://\S+", "[link]", snippet or "")
+    clean = re.sub(r"\S+@\S+", "[email]", clean)[:80]
+    RECENT_SCANS.appendleft({
+        "kind": kind,
+        "verdict": verdict,
+        "score": score,
+        "snippet": clean,
+        "ts": int(time.time()),
+    })
 
 
 SCAM_ANALYSIS_PROMPT = """You are Aegis AI, an expert cybersecurity and scam-detection system that protects everyday people from fraud.
@@ -160,6 +189,47 @@ Return ONLY valid JSON:
 }}"""
 
 
+IMAGE_ANALYSIS_PROMPT = """You are Aegis AI's screenshot analyzer. The user uploaded a screenshot of a suspicious message, email, text, website, or notification.
+
+Step 1: Read ALL visible text in the image (OCR).
+Step 2: Analyze the extracted content for scam indicators (phishing, impersonation, fraud, deepfake, urgency tactics).
+Step 3: Examine visual signals too — fake logos, suspicious URLs visible on screen, mismatched sender names, screenshot of a known phishing page design.
+
+Return ONLY valid JSON:
+{
+  "extracted_text": "<all readable text from the image, one block>",
+  "threat_score": <0-100>,
+  "verdict": "<SAFE | SUSPICIOUS | LIKELY_SCAM | DANGEROUS>",
+  "scam_type": "<primary category or 'None'>",
+  "visual_red_flags": ["<visual indicator 1>", "<visual indicator 2>"],
+  "red_flags": [{"flag": "<name>", "detail": "<explanation>", "severity": "<low|medium|high|critical>"}],
+  "recommended_actions": ["<action 1>", "<action 2>", "<action 3>"],
+  "explanation": "<plain English 2-3 sentence summary of what the screenshot shows and why it is or isn't dangerous>",
+  "confidence": <0-100>
+}"""
+
+
+AUDIO_ANALYSIS_PROMPT = """You are Aegis AI's voice recording analyzer. The user has recorded an audio clip of a suspicious call, voicemail, or voice message.
+
+Step 1: Transcribe the audio.
+Step 2: Look for scam indicators: impersonation (IRS, Microsoft, bank, family), pressure tactics, gift-card / wire / crypto requests, voice-cloning hallmarks (robotic cadence, unnatural emotion, inconsistencies, background anomalies).
+Step 3: Judge deepfake-voice likelihood from audio quality cues (if determinable).
+
+Return ONLY valid JSON:
+{
+  "transcript": "<transcribed audio>",
+  "threat_score": <0-100>,
+  "verdict": "<SAFE | SUSPICIOUS | LIKELY_SCAM | DANGEROUS>",
+  "scam_type": "<e.g. 'Grandparent Scam', 'IRS Impersonation', 'None'>",
+  "deepfake_voice_likelihood": <0-100>,
+  "voice_quality_notes": "<brief observation on cadence, naturalness>",
+  "red_flags": [{"flag": "<name>", "detail": "<explanation>", "severity": "<low|medium|high|critical>"}],
+  "recommended_actions": ["<action 1>", "<action 2>"],
+  "explanation": "<2-3 sentence plain English summary>",
+  "confidence": <0-100>
+}"""
+
+
 def _run_prompt(prompt: str) -> dict:
     client = _get_client()
     if not client:
@@ -175,13 +245,30 @@ def _run_prompt(prompt: str) -> dict:
         return {"__error__": str(e)}
 
 
+def _run_multimodal(parts: list) -> dict:
+    client = _get_client()
+    if not client:
+        return {}
+    try:
+        resp = client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=parts,
+            config=_gen_config_vision,
+        )
+        return _extract_json(resp.text or "")
+    except Exception as e:
+        return {"__error__": str(e)}
+
+
 def analyze_message(message: str) -> dict:
     data = _run_prompt(SCAM_ANALYSIS_PROMPT.format(message=message))
     if not data or "__error__" in data:
         fallback = _mock_message_response(message)
         if data and "__error__" in data:
             fallback["error"] = data["__error__"]
+        _log_scan("message", fallback["verdict"], fallback["threat_score"], message)
         return fallback
+    _log_scan("message", data.get("verdict", "UNKNOWN"), data.get("threat_score", 0), message)
     return data
 
 
@@ -191,7 +278,9 @@ def analyze_url(url: str) -> dict:
         fallback = _mock_url_response(url)
         if data and "__error__" in data:
             fallback["error"] = data["__error__"]
+        _log_scan("url", fallback["verdict"], fallback["threat_score"], url)
         return fallback
+    _log_scan("url", data.get("verdict", "UNKNOWN"), data.get("threat_score", 0), url)
     return data
 
 
@@ -201,7 +290,9 @@ def analyze_call(transcript: str) -> dict:
         fallback = _mock_call_response(transcript)
         if data and "__error__" in data:
             fallback["error"] = data["__error__"]
+        _log_scan("call", fallback["verdict"], fallback["threat_score"], transcript)
         return fallback
+    _log_scan("call", data.get("verdict", "UNKNOWN"), data.get("threat_score", 0), transcript)
     return data
 
 
@@ -211,8 +302,54 @@ def analyze_deepfake_text(text: str) -> dict:
         fallback = _mock_deepfake_response(text)
         if data and "__error__" in data:
             fallback["error"] = data["__error__"]
+        _log_scan("ai-text", fallback["verdict"], fallback["ai_likelihood"], text)
         return fallback
+    _log_scan("ai-text", data.get("verdict", "UNKNOWN"), data.get("ai_likelihood", 0), text)
     return data
+
+
+def analyze_image(image_bytes: bytes, mime_type: str = "image/png") -> dict:
+    client = _get_client()
+    if not client:
+        return _mock_image_response()
+    try:
+        img_part = types.Part.from_bytes(data=image_bytes, mime_type=mime_type)
+        resp = client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=[IMAGE_ANALYSIS_PROMPT, img_part],
+            config=_gen_config_vision,
+        )
+        data = _extract_json(resp.text or "")
+        if not data:
+            return _mock_image_response()
+        _log_scan("screenshot", data.get("verdict", "UNKNOWN"), data.get("threat_score", 0), data.get("extracted_text", ""))
+        return data
+    except Exception as e:
+        fallback = _mock_image_response()
+        fallback["error"] = str(e)
+        return fallback
+
+
+def analyze_audio(audio_bytes: bytes, mime_type: str = "audio/webm") -> dict:
+    client = _get_client()
+    if not client:
+        return _mock_audio_response()
+    try:
+        audio_part = types.Part.from_bytes(data=audio_bytes, mime_type=mime_type)
+        resp = client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=[AUDIO_ANALYSIS_PROMPT, audio_part],
+            config=_gen_config_vision,
+        )
+        data = _extract_json(resp.text or "")
+        if not data:
+            return _mock_audio_response()
+        _log_scan("voice", data.get("verdict", "UNKNOWN"), data.get("threat_score", 0), data.get("transcript", ""))
+        return data
+    except Exception as e:
+        fallback = _mock_audio_response()
+        fallback["error"] = str(e)
+        return fallback
 
 
 def _heuristic_score(text: str) -> int:
@@ -309,5 +446,40 @@ def _mock_deepfake_response(text: str) -> dict:
         "writing_style": "Unable to analyze without Gemini API key.",
         "explanation": "Offline heuristic mode. Add GEMINI_API_KEY for full AI-text detection.",
         "confidence": 40,
+        "offline_mode": True,
+    }
+
+
+def _mock_image_response() -> dict:
+    return {
+        "extracted_text": "(Offline mode — image text extraction requires Gemini)",
+        "threat_score": 50,
+        "verdict": "SUSPICIOUS",
+        "scam_type": "Unknown",
+        "visual_red_flags": ["Image analysis requires Gemini API key"],
+        "red_flags": [
+            {"flag": "Offline mode", "detail": "Set GEMINI_API_KEY to enable screenshot analysis", "severity": "low"}
+        ],
+        "recommended_actions": ["Add a Gemini API key to backend/.env"],
+        "explanation": "Running in offline mode. Full screenshot & OCR analysis requires the Gemini vision model.",
+        "confidence": 30,
+        "offline_mode": True,
+    }
+
+
+def _mock_audio_response() -> dict:
+    return {
+        "transcript": "(Offline mode — audio transcription requires Gemini)",
+        "threat_score": 50,
+        "verdict": "SUSPICIOUS",
+        "scam_type": "Unknown",
+        "deepfake_voice_likelihood": 50,
+        "voice_quality_notes": "Unable to analyze without Gemini.",
+        "red_flags": [
+            {"flag": "Offline mode", "detail": "Set GEMINI_API_KEY to enable voice analysis", "severity": "low"}
+        ],
+        "recommended_actions": ["Add a Gemini API key to backend/.env"],
+        "explanation": "Running in offline mode. Full voice transcription & deepfake detection requires Gemini.",
+        "confidence": 30,
         "offline_mode": True,
     }

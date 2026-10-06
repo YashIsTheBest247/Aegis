@@ -1,9 +1,10 @@
 import os
+import time
 from dotenv import load_dotenv
 
 load_dotenv()
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import Optional
@@ -13,7 +14,7 @@ from services import gemini_service
 app = FastAPI(
     title="Aegis AI",
     description="AI-powered scam, phishing, and deepfake defense for everyday people.",
-    version="1.0.0",
+    version="2.0.0",
 )
 
 app.add_middleware(
@@ -41,19 +42,30 @@ class TextIn(BaseModel):
     text: str = Field(..., min_length=1, max_length=20000)
 
 
+class WebhookIn(BaseModel):
+    content: str = Field(..., min_length=1, max_length=20000)
+    kind: str = Field("message", pattern="^(message|url|call|ai-text)$")
+    callback_url: Optional[str] = None
+
+
 @app.get("/")
 def root():
     return {
         "name": "Aegis AI",
         "status": "online",
+        "version": app.version,
         "gemini_configured": bool(os.getenv("GEMINI_API_KEY")),
         "endpoints": [
-            "/api/analyze/message",
-            "/api/analyze/url",
-            "/api/analyze/call",
-            "/api/analyze/deepfake-text",
-            "/api/scam-library",
-            "/api/stats",
+            "POST /api/analyze/message",
+            "POST /api/analyze/url",
+            "POST /api/analyze/call",
+            "POST /api/analyze/deepfake-text",
+            "POST /api/analyze/image  (multipart form, field=file)",
+            "POST /api/analyze/audio  (multipart form, field=file)",
+            "POST /api/webhook/scan   (JSON {content, kind})",
+            "GET  /api/scam-library",
+            "GET  /api/stats",
+            "GET  /api/feed",
         ],
     }
 
@@ -93,6 +105,64 @@ def analyze_deepfake_text(payload: TextIn):
         return gemini_service.analyze_deepfake_text(payload.text)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/analyze/image")
+async def analyze_image(file: UploadFile = File(...)):
+    try:
+        if file.size and file.size > 10 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail="Image too large (max 10 MB)")
+        data = await file.read()
+        mime = file.content_type or "image/png"
+        if not mime.startswith("image/"):
+            raise HTTPException(status_code=400, detail="File must be an image")
+        return gemini_service.analyze_image(data, mime_type=mime)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/analyze/audio")
+async def analyze_audio(file: UploadFile = File(...)):
+    try:
+        if file.size and file.size > 20 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail="Audio too large (max 20 MB)")
+        data = await file.read()
+        mime = file.content_type or "audio/webm"
+        if not (mime.startswith("audio/") or mime.startswith("video/")):
+            raise HTTPException(status_code=400, detail="File must be an audio clip")
+        return gemini_service.analyze_audio(data, mime_type=mime)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/webhook/scan")
+def webhook_scan(payload: WebhookIn, x_api_key: Optional[str] = Header(default=None)):
+    """
+    Generic integration endpoint for 3rd-party apps (email providers, chat apps, SMS gateways).
+    POST JSON {content, kind}. In production, require x-api-key.
+    """
+    try:
+        if payload.kind == "message":
+            res = gemini_service.analyze_message(payload.content)
+        elif payload.kind == "url":
+            res = gemini_service.analyze_url(payload.content)
+        elif payload.kind == "call":
+            res = gemini_service.analyze_call(payload.content)
+        else:
+            res = gemini_service.analyze_deepfake_text(payload.content)
+        return {"ok": True, "result": res}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/feed")
+def live_feed(limit: int = 20):
+    items = list(gemini_service.RECENT_SCANS)[:limit]
+    return {"items": items, "count": len(items)}
 
 
 @app.get("/api/scam-library")
@@ -257,12 +327,20 @@ def scam_library():
 
 @app.get("/api/stats")
 def stats():
+    scans = list(gemini_service.RECENT_SCANS)
+    danger_count = sum(1 for s in scans if s["verdict"] in ("DANGEROUS", "LIKELY_SCAM", "LIKELY_PHISHING", "AI_GENERATED", "LIKELY_AI"))
+    avg_score = round(sum(s["score"] for s in scans) / max(1, len(scans)))
     return {
-        "scams_blocked_global_2026": "4.6 trillion USD lost to fraud globally",
-        "deepfake_fraud_growth_yoy": "3000% YoY increase",
-        "ai_phishing_detection_rate": "Humans only catch 46% of AI-generated phishing",
-        "aegis_accuracy": "94% threat detection accuracy on test corpus",
-        "users_protected": "Open-source — anyone can self-host",
+        "total_scans": len(scans),
+        "threats_blocked": danger_count,
+        "avg_threat_score": avg_score,
+        "gemini_configured": bool(os.getenv("GEMINI_API_KEY")),
+        "fun_facts": {
+            "global_fraud_loss_2026": "$4.6 trillion USD",
+            "deepfake_fraud_yoy_growth": "3000%",
+            "human_phishing_detection_rate": "46%",
+            "aegis_detection_accuracy": "94%",
+        },
     }
 
 
