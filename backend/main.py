@@ -344,6 +344,108 @@ def scam_library():
     }
 
 
+QUIZ_ITEMS = [
+    {"id": "q1", "text": "URGENT: Your Chase account was locked due to unusual activity. Verify your identity in the next 24 hours at chase-verify-login.co or lose access.", "is_scam": True, "scam_type": "Phishing", "why": "Fake Chase domain (chase-verify-login.co), urgency tactic, and credential harvesting link. Chase never texts links to verify accounts."},
+    {"id": "q2", "text": "Hi mom, I lost my phone, this is my new number. Can you text me back when you see this? Love you.", "is_scam": True, "scam_type": "Family Impersonation", "why": "The 'I lost my phone, new number' opener is a classic family-impersonation scam. The next message asks for money or gift cards. Always verify by calling the original number."},
+    {"id": "q3", "text": "Reminder: Your dentist appointment is tomorrow at 10 AM with Dr. Patel. Reply C to confirm or R to reschedule.", "is_scam": False, "scam_type": "None", "why": "Legitimate appointment reminder: no payment request, no suspicious links, no urgency pressure, and a reasonable action (reply C or R)."},
+    {"id": "q4", "text": "Congratulations! You've won a $500 Amazon gift card for being a loyal customer. Claim yours at bit.ly/amzn-win-500 within 48 hours.", "is_scam": True, "scam_type": "Prize / Lottery Scam", "why": "Unsolicited prize, time pressure, URL shortener masking the destination, and a brand (Amazon) that doesn't give out gift cards this way. Classic phishing bait."},
+    {"id": "q5", "text": "Your Uber is arriving in 2 minutes. Toyota Camry, license 7XYZ123. Driver: Marcus.", "is_scam": False, "scam_type": "None", "why": "Transactional ride notification with specific vehicle info and no action requested. Matches a real ride you booked."},
+    {"id": "q6", "text": "This is the Social Security Administration. Your SSN has been suspended due to suspicious activity. Press 1 immediately to speak with an officer.", "is_scam": True, "scam_type": "Government Impersonation", "why": "The SSA never calls to suspend SSNs. 'Press 1' robocalls creating fear are a top government-impersonation scam. Hang up immediately."},
+    {"id": "q7", "text": "Your package from Nike was delivered to your front door. If you did not receive it, reply HELP.", "is_scam": False, "scam_type": "None", "why": "Standard delivery confirmation. No link, no payment, no urgency. The 'reply HELP' is a safe keyword, not a link to click."},
+    {"id": "q8", "text": "Hey babe, I know we just met online but I feel like we have a real connection. My mom is sick and I need $800 for her medicine. Can you send it via Zelle?", "is_scam": True, "scam_type": "Romance Scam", "why": "Fast emotional attachment, sob story, and request for money via irreversible payment (Zelle) to someone you've never met. Textbook romance scam."},
+    {"id": "q9", "text": "Hi, this is Mike from the Microsoft support team. We detected serious viruses on your computer. Please go to anydesk.com so I can help you fix it.", "is_scam": True, "scam_type": "Tech Support Scam", "why": "Microsoft never calls you unsolicited. Asking you to install remote-access software (AnyDesk) is a classic tech-support scam that leads to bank account drainage."},
+    {"id": "q10", "text": "Your Spotify Family plan renews on Nov 15 for $16.99. Manage your plan at spotify.com/account.", "is_scam": False, "scam_type": "None", "why": "Standard subscription renewal notice. Clear brand, real domain (spotify.com), reasonable price, no urgency, and no asked action."},
+    {"id": "q11", "text": "Grandma, it's me. I'm in jail and need bail money ASAP. Please don't tell mom and dad. Can you wire $3000 to this number?", "is_scam": True, "scam_type": "Grandparent Scam", "why": "The hallmark grandparent scam, now powered by AI voice cloning. Urgency, secrecy ('don't tell mom'), wire transfer. Always hang up and call the family member directly."},
+    {"id": "q12", "text": "Hi — this is a follow-up from our chat yesterday. I've attached the proposal we discussed. Let me know what you think when you get a chance.", "is_scam": False, "scam_type": "None", "why": "Normal professional follow-up. References a prior real conversation, no urgency, no suspicious link. Would be received after a legitimate meeting."},
+]
+
+
+# in-memory shareable report store
+SHARED_REPORTS: dict = {}
+
+
+@app.get("/api/quiz/items")
+def quiz_items():
+    import random
+    items = list(QUIZ_ITEMS)
+    random.shuffle(items)
+    # Hide the answer fields in the client payload; client submits an id + guess
+    public = [{"id": q["id"], "text": q["text"]} for q in items]
+    return {"items": public, "total": len(public)}
+
+
+class QuizGuess(BaseModel):
+    id: str
+    guess: bool
+
+
+@app.post("/api/quiz/check")
+def quiz_check(payload: QuizGuess):
+    item = next((q for q in QUIZ_ITEMS if q["id"] == payload.id), None)
+    if not item:
+        raise HTTPException(status_code=404, detail="Unknown quiz id")
+    return {
+        "correct": payload.guess == item["is_scam"],
+        "is_scam": item["is_scam"],
+        "scam_type": item["scam_type"],
+        "why": item["why"],
+    }
+
+
+class ReportIn(BaseModel):
+    data: dict
+    note: Optional[str] = Field(default=None, max_length=500)
+
+
+@app.post("/api/report/create")
+def create_report(payload: ReportIn):
+    import secrets
+    rid = secrets.token_urlsafe(6)
+    SHARED_REPORTS[rid] = {
+        "data": payload.data,
+        "note": payload.note or "",
+        "created": int(time.time()),
+    }
+    return {"id": rid}
+
+
+@app.get("/api/report/{rid}")
+def get_report(rid: str):
+    r = SHARED_REPORTS.get(rid)
+    if not r:
+        raise HTTPException(status_code=404, detail="Report not found")
+    return r
+
+
+@app.get("/api/trends")
+def trends():
+    scans = list(gemini_service.RECENT_SCANS)
+    # distribution by verdict
+    verdict_counts: dict = {}
+    kind_counts: dict = {}
+    score_buckets = [0, 0, 0, 0, 0]  # 0-20, 21-40, 41-60, 61-80, 81-100
+    for s in scans:
+        verdict_counts[s["verdict"]] = verdict_counts.get(s["verdict"], 0) + 1
+        kind_counts[s["kind"]] = kind_counts.get(s["kind"], 0) + 1
+        idx = min(4, s["score"] // 21)
+        score_buckets[idx] += 1
+    # pseudo 24h trendline (bucket by 2-hour windows based on ts)
+    import time as _t
+    now = int(_t.time())
+    buckets = [0] * 12  # 24h in 2h buckets
+    for s in scans:
+        delta = now - s["ts"]
+        if delta < 0: continue
+        bi = min(11, delta // (2 * 3600))
+        buckets[11 - bi] += 1
+    return {
+        "verdicts": verdict_counts,
+        "kinds": kind_counts,
+        "score_buckets": score_buckets,
+        "trend_24h": buckets,
+    }
+
+
 @app.get("/api/stats")
 def stats():
     scans = list(gemini_service.RECENT_SCANS)

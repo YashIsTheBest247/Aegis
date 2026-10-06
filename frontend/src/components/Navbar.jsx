@@ -10,9 +10,10 @@ export default function Navbar() {
           Aegis AI
         </a>
         <div className="nav-links">
-          <a href="#features">Shields</a>
           <a href="#scanner">Scan</a>
-          <a href="#usecases">Use cases</a>
+          <a href="#trends">Trends</a>
+          <a href="#quiz">Quiz</a>
+          <a href="#safeword">Safe word</a>
           <a href="#integrate">API</a>
           <a href="#library">Library</a>
         </div>

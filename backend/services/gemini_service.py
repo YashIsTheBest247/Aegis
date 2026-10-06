@@ -284,15 +284,32 @@ def _run_multimodal(parts: list) -> dict:
 
 
 def analyze_message(message: str) -> dict:
+    from . import featherless_service
+
     data = _run_prompt(SCAM_ANALYSIS_PROMPT.format(message=message))
     if not data or "__error__" in data:
         fallback = _mock_message_response(message)
         if data and "__error__" in data:
             fallback["error"] = data["__error__"]
         _log_scan("message", fallback["verdict"], fallback["threat_score"], message)
-        return fallback
+        return _attach_second_opinion(fallback, message, featherless_service)
     _log_scan("message", data.get("verdict", "UNKNOWN"), data.get("threat_score", 0), message)
-    return data
+    return _attach_second_opinion(data, message, featherless_service)
+
+
+def _attach_second_opinion(primary: dict, message: str, featherless_service) -> dict:
+    """Dual-shield: cross-check Gemini's verdict with Featherless's open-source LLM."""
+    if not featherless_service.is_enabled():
+        return primary
+    second = featherless_service.second_opinion(message)
+    if second and "error" not in second:
+        primary["second_opinion"] = second
+        # agreement flag
+        primary["agreement"] = (
+            primary.get("verdict") in (second.get("verdict"), None) or
+            abs(primary.get("threat_score", 0) - second.get("threat_score", 0)) < 20
+        )
+    return primary
 
 
 def analyze_url(url: str) -> dict:
@@ -357,9 +374,16 @@ def chat(messages: list) -> dict:
     """
     messages: [{"role": "user"|"assistant", "content": "..."}]
     Returns {"reply": "..."}
+    Primary: Gemini. Fallback: Featherless (if configured). Else: heuristic.
     """
+    from . import featherless_service
+
     client = _get_client()
     if not client:
+        # Gemini unavailable — try Featherless
+        fb = featherless_service.chat_reply(messages, CHAT_SYSTEM_PROMPT)
+        if fb and "error" not in fb and fb.get("reply"):
+            return fb
         return {"reply": _mock_chat_reply(messages), "offline_mode": True}
     try:
         # Convert history to Gemini format

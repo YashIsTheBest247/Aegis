@@ -5,6 +5,9 @@ import StatsStrip from './components/StatsStrip'
 import Features from './components/Features'
 import Scanner from './components/Scanner'
 import LiveFeed from './components/LiveFeed'
+import TrendsDashboard from './components/TrendsDashboard'
+import QuizGame from './components/QuizGame'
+import SafeWord from './components/SafeWord'
 import UseCases from './components/UseCases'
 import IntegrationAPI from './components/IntegrationAPI'
 import Integrations from './components/Integrations'
@@ -12,6 +15,7 @@ import ScamLibrary from './components/ScamLibrary'
 import CTA from './components/CTA'
 import Footer from './components/Footer'
 import ChatBot from './components/ChatBot'
+import PanicButton from './components/PanicButton'
 
 export default function App() {
   return (
@@ -43,7 +47,29 @@ export default function App() {
         </div>
       </section>
 
-      <section className="section" id="usecases">
+      <section className="section" id="trends">
+        <div className="section-head">
+          <span className="eyebrow">Live analytics</span>
+          <h2>Scam trends, in real time.</h2>
+          <p>Everything Aegis has seen, visualized. Updates every six seconds.</p>
+        </div>
+        <TrendsDashboard />
+      </section>
+
+      <section className="section" id="quiz" style={{ background: '#F0EFEC' }}>
+        <div className="section-head">
+          <span className="eyebrow">Train your instincts</span>
+          <h2>Can you spot the scam?</h2>
+          <p>Twelve real-world messages. Guess which ones are scams. Aegis teaches you why — so you catch the next one yourself.</p>
+        </div>
+        <QuizGame />
+      </section>
+
+      <section className="section" id="safeword">
+        <SafeWord />
+      </section>
+
+      <section className="section" id="usecases" style={{ background: '#F0EFEC' }}>
         <div className="section-head">
           <span className="eyebrow">Who Aegis protects</span>
           <h2>Built for the people AI scammers target most.</h2>
@@ -52,15 +78,15 @@ export default function App() {
         <UseCases />
       </section>
 
-      <section className="section" id="integrate" style={{ background: '#F0EFEC' }}>
+      <section className="section" id="integrate">
         <IntegrationAPI />
       </section>
 
-      <section className="section" id="integrations">
+      <section className="section" id="integrations" style={{ background: '#F0EFEC' }}>
         <Integrations />
       </section>
 
-      <section className="section" id="library" style={{ background: '#F0EFEC' }}>
+      <section className="section" id="library">
         <div className="section-head">
           <span className="eyebrow">Scam Library</span>
           <h2>Know the playbook, break the trap.</h2>
@@ -75,6 +101,7 @@ export default function App() {
 
       <Footer />
       <ChatBot />
+      <PanicButton />
     </>
   )
 }

@@ -427,6 +427,25 @@ function ResultView({ result, tab }) {
         </>
       )}
 
+      {result.second_opinion && (
+        <>
+          <div className="result-section-title">Dual-Shield · second opinion</div>
+          <div className="second-op">
+            <div className="second-op-head">
+              <span className={`verdict-pill verdict-${result.second_opinion.verdict}`} style={{ fontSize: '0.72rem', padding: '4px 10px' }}>
+                {(result.second_opinion.verdict || 'UNKNOWN').replace(/_/g, ' ')}
+              </span>
+              <span className="second-op-score">{result.second_opinion.threat_score}/100</span>
+              <span className={`second-op-flag ${result.agreement ? 'agree' : 'disagree'}`}>
+                {result.agreement ? '✓ Agrees with Gemini' : '⚠ Disagrees'}
+              </span>
+            </div>
+            <div className="second-op-body">{result.second_opinion.reasoning}</div>
+            <div className="second-op-provider">via {result.second_opinion.provider}</div>
+          </div>
+        </>
+      )}
+
       {result.offline_mode && (
         <div style={{ fontSize: '0.78rem', color: '#888', marginTop: 8 }}>
           Running in offline heuristic mode — set <code>GEMINI_API_KEY</code> for full AI analysis.
