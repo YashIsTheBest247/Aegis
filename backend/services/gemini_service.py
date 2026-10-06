@@ -1,0 +1,313 @@
+import os
+import json
+import re
+from typing import Optional
+
+from google import genai
+from google.genai import types
+
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash-exp")
+
+_client: Optional[genai.Client] = None
+
+
+def _get_client() -> Optional[genai.Client]:
+    global _client
+    if not GEMINI_API_KEY:
+        return None
+    if _client is None:
+        _client = genai.Client(api_key=GEMINI_API_KEY)
+    return _client
+
+
+_gen_config = types.GenerateContentConfig(
+    temperature=0.3,
+    top_p=0.95,
+    top_k=40,
+    max_output_tokens=2048,
+    response_mime_type="application/json",
+)
+
+
+def _extract_json(text: str) -> dict:
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+    match = re.search(r"\{[\s\S]*\}", text)
+    if match:
+        try:
+            return json.loads(match.group(0))
+        except Exception:
+            pass
+    return {}
+
+
+SCAM_ANALYSIS_PROMPT = """You are Aegis AI, an expert cybersecurity and scam-detection system that protects everyday people from fraud.
+
+Analyze the following suspicious message for scam indicators. Consider:
+- Phishing attempts (fake links, credential harvesting)
+- Social engineering (urgency, authority, fear, scarcity)
+- Impersonation (fake companies, government, family emergencies)
+- Financial fraud (fake invoices, crypto scams, wire fraud)
+- Romance / investment scams
+- AI-generated content patterns (overly polished grammar, generic phrases, unusual syntax)
+- Suspicious links, phone numbers, or payment demands
+- Grammar / spelling errors typical of scams
+
+Message to analyze:
+---
+{message}
+---
+
+Return ONLY valid JSON matching this exact schema:
+{{
+  "threat_score": <integer 0-100>,
+  "verdict": "<SAFE | SUSPICIOUS | LIKELY_SCAM | DANGEROUS>",
+  "scam_type": "<primary category, e.g. 'Phishing', 'Impersonation', 'Investment Scam', 'Romance Scam', 'None'>",
+  "ai_generated_likelihood": <integer 0-100>,
+  "red_flags": [
+    {{"flag": "<short name>", "detail": "<one sentence explanation>", "severity": "<low|medium|high|critical>"}}
+  ],
+  "recommended_actions": ["<action 1>", "<action 2>", "<action 3>"],
+  "explanation": "<2-3 sentence plain English explanation a non-technical user can understand>",
+  "confidence": <integer 0-100>
+}}
+
+Be strict. If anything looks remotely suspicious, flag it. Score aggressively to protect users."""
+
+
+URL_ANALYSIS_PROMPT = """You are Aegis AI's URL safety analyzer. Analyze the following URL for phishing, scam, and fraud indicators.
+
+Look for:
+- Typosquatting (fake versions of real domains like paypa1.com, g00gle.com, amaz0n-security.com)
+- Suspicious TLDs (.xyz, .top, .click, .zip)
+- URL shorteners masking real destinations
+- IP addresses instead of domains
+- Excessive subdomains or long suspicious paths
+- Impersonation of banks, payment, government, delivery services
+- Suspicious query parameters or redirect patterns
+- Known scam patterns (crypto, lottery, prize, verification urgency)
+
+URL: {url}
+
+Return ONLY valid JSON:
+{{
+  "threat_score": <0-100>,
+  "verdict": "<SAFE | SUSPICIOUS | LIKELY_PHISHING | DANGEROUS>",
+  "category": "<phishing | malware | typosquatting | legitimate | shortener | unknown>",
+  "impersonating": "<brand being impersonated, or 'none'>",
+  "red_flags": [{{"flag": "<name>", "detail": "<explanation>", "severity": "<low|medium|high|critical>"}}],
+  "recommendation": "<one sentence action to take>",
+  "safe_alternative": "<if impersonating a brand, suggest the real URL, else 'none'>",
+  "confidence": <0-100>
+}}"""
+
+
+CALL_ANALYSIS_PROMPT = """You are Aegis AI's voice-call scam analyzer. Analyze this transcript of a phone or voice interaction for scam indicators.
+
+Watch for:
+- Impersonation (IRS, Social Security, bank, Microsoft support, police, grandchild in trouble)
+- Pressure tactics (immediate payment, threats of arrest, limited-time offers)
+- Requests for gift cards, wire transfers, crypto, remote computer access
+- Voice cloning / deepfake indicators (robotic phrasing, generic emotional appeals, inconsistencies)
+- Caller refuses callback or verification
+- Unusual payment methods
+
+Transcript:
+---
+{transcript}
+---
+
+Return ONLY valid JSON:
+{{
+  "threat_score": <0-100>,
+  "verdict": "<SAFE | SUSPICIOUS | LIKELY_SCAM | DANGEROUS>",
+  "scam_type": "<e.g. 'Tech Support Scam', 'IRS Impersonation', 'Grandparent Scam', 'None'>",
+  "deepfake_voice_likelihood": <0-100>,
+  "red_flags": [{{"flag": "<name>", "detail": "<explanation>", "severity": "<low|medium|high|critical>"}}],
+  "tactics_used": ["<social engineering tactic>", ...],
+  "recommended_actions": ["<action 1>", "<action 2>"],
+  "explanation": "<plain English 2-3 sentence summary>",
+  "confidence": <0-100>
+}}"""
+
+
+DEEPFAKE_TEXT_PROMPT = """You are Aegis AI's AI-content detector. Analyze whether the following text was likely generated by an AI language model (ChatGPT, Claude, Gemini, etc.) and whether it is being used maliciously.
+
+Consider:
+- Overly polished grammar with generic phrasing
+- Lack of personal voice, idioms, or human quirks
+- Statistical hallmarks (common AI openers, structured bullet-like sentences)
+- Consistency with scam-generated content (mass phishing, fake reviews, impersonation)
+- Context: is this a message, review, email, or document?
+
+Text:
+---
+{text}
+---
+
+Return ONLY valid JSON:
+{{
+  "ai_likelihood": <0-100>,
+  "verdict": "<HUMAN | LIKELY_HUMAN | MIXED | LIKELY_AI | AI_GENERATED>",
+  "malicious_use_likelihood": <0-100>,
+  "indicators": [{{"indicator": "<name>", "detail": "<explanation>"}}],
+  "writing_style": "<brief description>",
+  "explanation": "<2-3 sentence plain English summary>",
+  "confidence": <0-100>
+}}"""
+
+
+def _run_prompt(prompt: str) -> dict:
+    client = _get_client()
+    if not client:
+        return {}
+    try:
+        resp = client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=prompt,
+            config=_gen_config,
+        )
+        return _extract_json(resp.text or "")
+    except Exception as e:
+        return {"__error__": str(e)}
+
+
+def analyze_message(message: str) -> dict:
+    data = _run_prompt(SCAM_ANALYSIS_PROMPT.format(message=message))
+    if not data or "__error__" in data:
+        fallback = _mock_message_response(message)
+        if data and "__error__" in data:
+            fallback["error"] = data["__error__"]
+        return fallback
+    return data
+
+
+def analyze_url(url: str) -> dict:
+    data = _run_prompt(URL_ANALYSIS_PROMPT.format(url=url))
+    if not data or "__error__" in data:
+        fallback = _mock_url_response(url)
+        if data and "__error__" in data:
+            fallback["error"] = data["__error__"]
+        return fallback
+    return data
+
+
+def analyze_call(transcript: str) -> dict:
+    data = _run_prompt(CALL_ANALYSIS_PROMPT.format(transcript=transcript))
+    if not data or "__error__" in data:
+        fallback = _mock_call_response(transcript)
+        if data and "__error__" in data:
+            fallback["error"] = data["__error__"]
+        return fallback
+    return data
+
+
+def analyze_deepfake_text(text: str) -> dict:
+    data = _run_prompt(DEEPFAKE_TEXT_PROMPT.format(text=text))
+    if not data or "__error__" in data:
+        fallback = _mock_deepfake_response(text)
+        if data and "__error__" in data:
+            fallback["error"] = data["__error__"]
+        return fallback
+    return data
+
+
+def _heuristic_score(text: str) -> int:
+    score = 0
+    lower = text.lower()
+    triggers = [
+        "urgent", "verify", "suspended", "click here", "wire transfer",
+        "gift card", "bitcoin", "crypto", "bank account", "social security",
+        "arrest", "warrant", "irs", "limited time", "congratulations",
+        "winner", "prize", "lottery", "inheritance", "nigerian",
+        "password", "login", "confirm your", "account locked", "unusual activity",
+        "bail", "jail", "accident", "don't tell", "ceo", "wire",
+    ]
+    for t in triggers:
+        if t in lower:
+            score += 10
+    if re.search(r"https?://\S+", text):
+        score += 10
+    if re.search(r"\$[0-9,]+", text):
+        score += 8
+    return min(score, 95)
+
+
+def _mock_message_response(message: str) -> dict:
+    score = _heuristic_score(message)
+    verdict = "SAFE" if score < 25 else "SUSPICIOUS" if score < 55 else "LIKELY_SCAM" if score < 80 else "DANGEROUS"
+    return {
+        "threat_score": score,
+        "verdict": verdict,
+        "scam_type": "Phishing" if score > 40 else "None",
+        "ai_generated_likelihood": 30,
+        "red_flags": [
+            {"flag": "Heuristic match", "detail": "Message contains common scam keywords", "severity": "medium"}
+        ] if score > 25 else [],
+        "recommended_actions": [
+            "Do not click any links",
+            "Verify the sender through an official channel",
+            "Report the message as spam",
+        ],
+        "explanation": "Running in offline heuristic mode (no Gemini API key). Add GEMINI_API_KEY for full AI analysis.",
+        "confidence": 50,
+        "offline_mode": True,
+    }
+
+
+def _mock_url_response(url: str) -> dict:
+    score = 20
+    lower = url.lower()
+    sus = ["bit.ly", "tinyurl", ".xyz", ".top", ".click", ".zip", "paypa1", "g00gle", "amaz0n", "login-", "-verify", "-secure"]
+    for s in sus:
+        if s in lower:
+            score += 20
+    score = min(score, 95)
+    verdict = "SAFE" if score < 25 else "SUSPICIOUS" if score < 55 else "LIKELY_PHISHING" if score < 80 else "DANGEROUS"
+    return {
+        "threat_score": score,
+        "verdict": verdict,
+        "category": "unknown",
+        "impersonating": "none",
+        "red_flags": [],
+        "recommendation": "Add a Gemini API key for full URL threat analysis.",
+        "safe_alternative": "none",
+        "confidence": 50,
+        "offline_mode": True,
+    }
+
+
+def _mock_call_response(transcript: str) -> dict:
+    score = _heuristic_score(transcript)
+    verdict = "SAFE" if score < 25 else "SUSPICIOUS" if score < 55 else "LIKELY_SCAM" if score < 80 else "DANGEROUS"
+    return {
+        "threat_score": score,
+        "verdict": verdict,
+        "scam_type": "Tech Support Scam" if "microsoft" in transcript.lower() else "Unknown",
+        "deepfake_voice_likelihood": 25,
+        "red_flags": [],
+        "tactics_used": ["Urgency", "Authority"] if score > 40 else [],
+        "recommended_actions": ["Hang up", "Call back using an official number"],
+        "explanation": "Offline heuristic mode. Add GEMINI_API_KEY for full voice-call analysis.",
+        "confidence": 50,
+        "offline_mode": True,
+    }
+
+
+def _mock_deepfake_response(text: str) -> dict:
+    length = len(text)
+    score = 50 if length > 200 else 30
+    verdict = "LIKELY_AI" if score > 60 else "MIXED"
+    return {
+        "ai_likelihood": score,
+        "verdict": verdict,
+        "malicious_use_likelihood": 20,
+        "indicators": [],
+        "writing_style": "Unable to analyze without Gemini API key.",
+        "explanation": "Offline heuristic mode. Add GEMINI_API_KEY for full AI-text detection.",
+        "confidence": 40,
+        "offline_mode": True,
+    }
