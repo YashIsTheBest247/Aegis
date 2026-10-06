@@ -48,6 +48,15 @@ class WebhookIn(BaseModel):
     callback_url: Optional[str] = None
 
 
+class ChatMessage(BaseModel):
+    role: str = Field(..., pattern="^(user|assistant)$")
+    content: str = Field(..., min_length=1, max_length=4000)
+
+
+class ChatIn(BaseModel):
+    messages: list[ChatMessage] = Field(..., min_length=1, max_length=20)
+
+
 @app.get("/")
 def root():
     return {
@@ -62,6 +71,7 @@ def root():
             "POST /api/analyze/deepfake-text",
             "POST /api/analyze/image  (multipart form, field=file)",
             "POST /api/analyze/audio  (multipart form, field=file)",
+            "POST /api/chat           (JSON {messages:[{role,content}]})",
             "POST /api/webhook/scan   (JSON {content, kind})",
             "GET  /api/scam-library",
             "GET  /api/stats",
@@ -135,6 +145,15 @@ async def analyze_audio(file: UploadFile = File(...)):
         return gemini_service.analyze_audio(data, mime_type=mime)
     except HTTPException:
         raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/chat")
+def chat(payload: ChatIn):
+    try:
+        msgs = [{"role": m.role, "content": m.content} for m in payload.messages]
+        return gemini_service.chat(msgs)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

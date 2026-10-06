@@ -209,6 +209,29 @@ Return ONLY valid JSON:
 }"""
 
 
+CHAT_SYSTEM_PROMPT = """You are Aegis AI's chat assistant — an expert cybersecurity and anti-scam advisor.
+
+Your job:
+1. Help everyday people understand if a message, call, URL, or situation is a scam.
+2. Teach scam patterns in plain English — never condescending.
+3. If someone describes a scam they received, break down the red flags and tell them what to do.
+4. If someone was already scammed, be kind, give concrete recovery steps (report to IC3.gov/FTC, call bank, freeze credit, change passwords).
+5. Point users to the right Aegis tool (Message Scanner, URL Checker, Voice Analyzer, Screenshot Scanner, AI-text Detector) when it fits.
+
+Rules:
+- Be concise. Prefer short bulleted answers over long paragraphs.
+- Never ask the user to share passwords, SSNs, card numbers, or other secrets.
+- Default to protective advice: when in doubt, treat something as suspicious.
+- When relevant, mention the exact Aegis tool to use (e.g. "paste it in the Message Scanner tab").
+- Never give instructions for scamming, phishing, hacking, or any illegal activity. If asked, decline briefly.
+- You are text-only here (no scanning). To actually scan, tell them to use the Aegis tool.
+
+Format:
+- Plain text, short paragraphs or bullet lists. No markdown headers. No code blocks unless truly needed.
+- Keep answers under 180 words unless the user asks for depth.
+"""
+
+
 AUDIO_ANALYSIS_PROMPT = """You are Aegis AI's voice recording analyzer. The user has recorded an audio clip of a suspicious call, voicemail, or voice message.
 
 Step 1: Transcribe the audio.
@@ -328,6 +351,48 @@ def analyze_image(image_bytes: bytes, mime_type: str = "image/png") -> dict:
         fallback = _mock_image_response()
         fallback["error"] = str(e)
         return fallback
+
+
+def chat(messages: list) -> dict:
+    """
+    messages: [{"role": "user"|"assistant", "content": "..."}]
+    Returns {"reply": "..."}
+    """
+    client = _get_client()
+    if not client:
+        return {"reply": _mock_chat_reply(messages), "offline_mode": True}
+    try:
+        # Convert history to Gemini format
+        contents = []
+        for m in messages:
+            role = "user" if m.get("role") == "user" else "model"
+            contents.append(types.Content(role=role, parts=[types.Part.from_text(text=m.get("content", ""))]))
+
+        cfg = types.GenerateContentConfig(
+            temperature=0.5,
+            top_p=0.95,
+            max_output_tokens=600,
+            system_instruction=CHAT_SYSTEM_PROMPT,
+        )
+        resp = client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=contents,
+            config=cfg,
+        )
+        return {"reply": (resp.text or "").strip() or "Sorry — I couldn't come up with a response. Try rephrasing."}
+    except Exception as e:
+        return {"reply": _mock_chat_reply(messages), "offline_mode": True, "error": str(e)}
+
+
+def _mock_chat_reply(messages: list) -> str:
+    last = (messages[-1]["content"] if messages else "").lower()
+    if any(k in last for k in ["hi", "hello", "hey", "yo"]):
+        return "Hey! I'm Aegis — your anti-scam assistant. Describe the message, call, or situation and I'll help you spot the red flags. (Note: running in offline mode — add GEMINI_API_KEY for the full AI assistant.)"
+    if any(k in last for k in ["scam", "phishing", "fraud", "fake"]):
+        return "That sounds suspicious. Classic scam signs:\n• Urgency (act now, 24-hour deadline)\n• Payment via gift cards, wire, or crypto\n• Fake links or caller ID\n• Pressure to keep it secret\n\nPaste the message in the Message Scanner tab for a Gemini verdict in seconds. (Offline mode — add GEMINI_API_KEY for the full chat.)"
+    if any(k in last for k in ["help", "what can you do", "features"]):
+        return "I can:\n• Explain any scam pattern in plain English\n• Walk you through what to do if targeted\n• Point you to the right Aegis scanner (message, URL, call, screenshot, voice, AI-text)\n\nTry: 'I got a text from Chase saying my account is locked' and I'll break it down."
+    return "I'm running in offline mode right now — add a Gemini API key to the backend .env to enable the full AI assistant. In the meantime, try the scanner tools above for real-time analysis."
 
 
 def analyze_audio(audio_bytes: bytes, mime_type: str = "audio/webm") -> dict:

@@ -11,6 +11,7 @@ import Integrations from './components/Integrations'
 import ScamLibrary from './components/ScamLibrary'
 import CTA from './components/CTA'
 import Footer from './components/Footer'
+import ChatBot from './components/ChatBot'
 
 export default function App() {
   return (
@@ -73,6 +74,7 @@ export default function App() {
       </section>
 
       <Footer />
+      <ChatBot />
     </>
   )
 }
